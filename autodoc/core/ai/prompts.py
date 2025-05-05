@@ -277,3 +277,47 @@ def generate_project_overview_prompt(
 5.  **Strictly adhere to the provided information. Synthesize the overview from the component summaries only.** Do not speculate or add external knowledge.
 """
     return prompt.strip()
+
+def generate_import_block_prompt(
+    file_path: str,
+    imports: List[Dict[str, Any]], 
+    line_numbers: Tuple[Optional[int], Optional[int]],
+) -> str:
+    """Generates the prompt for summarizing an ImportBlockNode."""
+
+    import_lines = []
+    for imp in imports:
+        code = imp.get("code_snippet")
+        if code:
+            import_lines.append(code.strip())
+        else: 
+            if imp['type'] == 'import':
+                line = f"import {imp['name']}"
+                if imp['alias']: line += f" as {imp['alias']}"
+                import_lines.append(line)
+            elif imp['type'] == 'from':
+                 level_dots = "." * imp.get('level', 0)
+                 module_part = imp.get('module', '')
+                 line = f"from {level_dots}{module_part} import {imp['name']}"
+                 if imp['alias']: line += f" as {imp['alias']}"
+                 import_lines.append(line)
+
+    import_block_str = "\n".join(import_lines)
+
+    prompt = f"""
+{LLM_ROLE}
+
+**Task:** Generate a concise Markdown summary for the block of import statements found in the file `{file_path}` between lines {line_numbers[0]}-{line_numbers[1]}.
+
+**Input Data:**
+- **Import Statements:**
+{_format_code(import_block_str)}
+
+**Instructions:**
+1.  Briefly describe the purpose of this block (i.e., importing dependencies).
+2.  List the primary libraries or modules being imported (e.g., "Imports standard libraries like os, typing, and third-party libraries like fastapi, pydantic.").
+3.  Mention any significant relative imports if present (e.g., "...and internal project modules like .config, .models").
+4.  Output *only* the Markdown summary, without preamble or explanation.
+5.  **Focus only on the import statements provided.** Do not infer functionality beyond importing.
+"""
+    return prompt.strip()

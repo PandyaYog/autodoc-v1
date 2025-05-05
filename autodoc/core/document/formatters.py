@@ -6,6 +6,7 @@ from ...models.graph import (
     FileNode,
     ClassNode,
     FunctionNode,
+    ImportBlockNode,
     NonFunctionNonClassNode
 )
 
@@ -117,6 +118,26 @@ def format_non_function_non_class_markdown(node: NonFunctionNonClassNode, headin
         md += _create_code_block(node.code_snippet)
     return md
 
+def format_import_block_markdown(node: ImportBlockNode, heading_level: int = 4) -> str:
+    """Formats an ImportBlockNode into Markdown."""
+    logger.debug(f"Formatting ImportBlockNode: {node.name}")
+    heading_text = f"Import Block (Lines {node.start_line}-{node.end_line})"
+    md = _create_heading(heading_text, heading_level)
+    md += _format_summary(node.summary)
+
+    import_lines = []
+    for imp in node.imports:
+        code = imp.get("code_snippet")
+        if code: import_lines.append(code.strip())
+
+    if import_lines:
+        import_block_str = "\n".join(import_lines)
+        md += "<details>\n"
+        md += f"<summary>Import Statements</summary>\n\n"
+        md += _create_code_block(import_block_str)
+        md += "</details>\n\n"
+
+    return md
 
 def format_node_markdown(node: BaseNode, heading_level: int) -> str:
     """
@@ -133,6 +154,7 @@ def format_node_markdown(node: BaseNode, heading_level: int) -> str:
     formatter_map = {
         "FOLDER": format_folder_markdown,
         "FILE": format_file_markdown,
+        "IMPORT_BLOCK": format_import_block_markdown,
         "CLASS": format_class_markdown,
         "FUNCTION": format_function_markdown,
         "NON_FUNCTION_NON_CLASS": format_non_function_non_class_markdown,

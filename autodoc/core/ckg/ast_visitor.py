@@ -133,12 +133,15 @@ class ASTVisitor(ast.NodeVisitor):
     def _get_source_segment(self, node: ast.AST) -> Optional[str]:
         """Gets the original source code segment for a node."""
         try:
-            return ast.get_source_segment(self.source_code, node, padded=True)
+            return ast.get_source_segment(self.source_code, node, padded=False)
         except Exception:
             logger.warning(
                 f"Could not get source segment for node type {type(node).__name__} at line {getattr(node, 'lineno', '?')}",
                 exc_info=False)
-            return None
+            try:
+                return ast.unparse(node)
+            except Exception:
+                return None
 
     def _add_used_name(self, name: str):
         """Adds a used name to the current context."""
@@ -150,14 +153,31 @@ class ASTVisitor(ast.NodeVisitor):
                 self.used_names[context_lines].append(name)
 
     def visit(self, node):
-        """Override visit to track context for top-level code."""
-        is_top_level_statement = False
-        parent = getattr(node, 'parent', None)
+        """Override visit to handle specific node types and track context."""
+        method_name = f'visit_{node.__class__.__name__}'
+        visitor_method = getattr(self, method_name, None)
 
-        if not self._current_context_stack:
-            if not isinstance(node, (
-            ast.Module, ast.Import, ast.ImportFrom, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        if visitor_method is not None:
+            visitor_method(node)
+        else:
+            is_top_level = not self._current_context_stack
+            top_level_code_types = (
+                ast.Assign, ast.AnnAssign, ast.AugAssign,
+                ast.Expr,
+                ast.If, ast.For, ast.While, ast.With,
+                ast.Try, ast.Raise, ast.Assert,
+                ast.AsyncFor, ast.AsyncWith,
+            )
 
+            create_tl_node = False
+            if is_top_level and isinstance(node, top_level_code_types):
+                if isinstance(node, ast.Expr) and isinstance(node.value, ast.Name):
+                    logger.debug(f"Ignoring top-level bare name Expr: {node.value.id} at line {node.lineno}")
+                    create_tl_node = False
+                else:
+                    create_tl_node = True
+
+            if create_tl_node:
                 start_line, end_line = _get_node_lines(node)
                 if start_line is not None and end_line is not None:
                     snippet = self._get_source_segment(node)
@@ -170,11 +190,12 @@ class ASTVisitor(ast.NodeVisitor):
                     })
                     self._current_context_stack.append(("TOP_LEVEL", name, (start_line, end_line)))
                     try:
-                        super().visit(node)
+                        self.generic_visit(node)
                     finally:
                         self._current_context_stack.pop()
                     return
-        super().visit(node)
+            else:
+                self.generic_visit(node)
 
     def visit_Import(self, node: ast.Import):
         start_line, end_line = _get_node_lines(node)
@@ -186,14 +207,13 @@ class ASTVisitor(ast.NodeVisitor):
                 "alias": alias.asname,
                 "start_line": start_line,
                 "end_line": end_line,
+                "code_snippet": self._get_source_segment(node)
             })
-        self.generic_visit(node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom):
         start_line, end_line = _get_node_lines(node)
         module_name = node.module or ""
         level = node.level
-
         for alias in node.names:
             self.imports.append({
                 "type": "from",
@@ -203,8 +223,8 @@ class ASTVisitor(ast.NodeVisitor):
                 "alias": alias.asname,
                 "start_line": start_line,
                 "end_line": end_line,
+                "code_snippet": self._get_source_segment(node)
             })
-        self.generic_visit(node)
 
     def visit_ClassDef(self, node: ast.ClassDef):
         start_line, end_line = _get_node_lines(node)
@@ -243,7 +263,6 @@ class ASTVisitor(ast.NodeVisitor):
                         "end_line": nested_end,
                     })
                 elif isinstance(item, ast.Assign):
-                    # Basic class variable extraction
                     for target in item.targets:
                         if isinstance(target, ast.Name):
                             var_start, var_end = _get_node_lines(item)
@@ -255,10 +274,8 @@ class ASTVisitor(ast.NodeVisitor):
                             })
                 elif not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                     self.visit(item)
-
         finally:
             self._current_context_stack.pop()
-
         self.classes.append(class_data)
 
     def visit_FunctionDef(self, node: ast.FunctionDef):
@@ -283,7 +300,6 @@ class ASTVisitor(ast.NodeVisitor):
 
     def _extract_function_data(self, node: Union[ast.FunctionDef, ast.AsyncFunctionDef], is_method: bool,
                                class_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        """Helper to extract data from FunctionDef/AsyncFunctionDef."""
         start_line, end_line = _get_node_lines(node)
         docstring = _get_docstring(node)
         signature = _format_signature(node)
@@ -306,8 +322,7 @@ class ASTVisitor(ast.NodeVisitor):
         if is_method:
             self._current_context_stack.append(("FUNCTION", node.name, (start_line, end_line)))
             try:
-                for item in node.body:
-                    self.visit(item)
+                self.generic_visit(node)
             finally:
                 self._current_context_stack.pop()
 

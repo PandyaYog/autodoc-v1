@@ -2,7 +2,7 @@ import ast
 import logging
 import os
 from pathlib import Path
-from typing import Optional, Tuple, Dict
+from typing import Optional, Tuple, Dict, List, Any
 from uuid import UUID
 from .ast_visitor import ASTVisitor
 from .graph import CKG
@@ -11,6 +11,7 @@ from ...models.graph import (
     FileNode,
     ClassNode,
     FunctionNode,
+    ImportBlockNode,
     NonFunctionNonClassNode,
     NodeType
 )
@@ -90,7 +91,7 @@ def _process_file(
         return
     except Exception as e:
         logger.error(f"Failed to read or parse file {file_path}: {e}", exc_info=True)
-        return # Skip this file
+        return
 
     try:
         visitor = ASTVisitor(str(file_path), source_code)
@@ -101,8 +102,31 @@ def _process_file(
         return
 
     node_map: Dict[Tuple[NodeType, str, int], UUID] = {}
+    file_node_nx = ckg.get_node_nx_data(file_node_id)
+    temp_ast_classes = []
+
+    imports_data: List[Dict[str, Any]] = results.get("imports", [])
+    if imports_data:
+        min_line = min(imp.get("start_line") for imp in imports_data if imp.get("start_line") is not None)
+        max_line = max(imp.get("end_line") for imp in imports_data if imp.get("end_line") is not None)
+
+        import_block_node = ImportBlockNode(
+            name=f"Imports (L{min_line}-L{max_line})",
+            file_path=str(relative_path),
+            start_line=min_line,
+            end_line=max_line,
+            imports=imports_data, 
+            depth=current_depth + 1, 
+            belongs_to=file_node_id,
+        )
+        import_block_id = ckg.add_node(import_block_node)
+        ckg.add_edge(file_node_id, import_block_id, type="CONTAINS")
+        ckg.add_edge(import_block_id, file_node_id, type="DEFINED_IN")
+        ckg.add_edge(import_block_id, file_node_id, type="IS_PART_OF")
+        logger.debug(f"Created ImportBlockNode for {file_path.name}")
 
     for class_data in results.get("classes", []):
+        temp_ast_classes.append(class_data)
         class_node = ClassNode(
             name=class_data["name"],
             file_path=str(relative_path),
@@ -114,6 +138,7 @@ def _process_file(
             code_snippet=class_data["code_snippet"],
             depth=current_depth + 1,
             belongs_to=file_node_id,
+            imports_used=class_data.get("used_names", [])
         )
         class_node_id = ckg.add_node(class_node)
         node_map[("CLASS", class_node.name, class_node.start_line)] = class_node_id
@@ -134,6 +159,7 @@ def _process_file(
                 code_snippet=method_data["code_snippet"],
                 depth=current_depth + 2,
                 belongs_to=class_node_id,
+                imports_used=method_data.get("used_names", [])
             )
             method_node_id = ckg.add_node(method_node)
             node_map[("FUNCTION", method_node.name, method_node.start_line)] = method_node_id
@@ -154,6 +180,7 @@ def _process_file(
             code_snippet=func_data["code_snippet"],
             depth=current_depth + 1,
             belongs_to=file_node_id,
+            imports_used=func_data.get("used_names", [])
         )
         func_node_id = ckg.add_node(func_node)
         node_map[("FUNCTION", func_node.name, func_node.start_line)] = func_node_id
@@ -171,19 +198,19 @@ def _process_file(
             code_snippet=tl_data["code_snippet"],
             depth=current_depth + 1,
             belongs_to=file_node_id,
+            imports_used=tl_data.get("used_names", [])
         )
         tl_node_id = ckg.add_node(tl_node)
         ckg.add_edge(file_node_id, tl_node_id, type="CONTAINS")
         ckg.add_edge(tl_node_id, file_node_id, type="DEFINED_IN")
         ckg.add_edge(tl_node_id, file_node_id, type="IS_PART_OF")
 
-    file_node_nx = ckg.get_node_nx_data(file_node_id)
     if file_node_nx:
-        file_node_nx['ast_results'] = results
+        file_node_nx['ast_calls'] = results.get("calls", [])
         file_node_nx['node_map'] = node_map
+        file_node_nx['ast_classes'] = temp_ast_classes
 
     logger.debug(f"Finished processing file: {file_path}")
-
 
 def _traverse_directory(
     ckg: CKG,

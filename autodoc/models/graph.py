@@ -1,5 +1,5 @@
 import uuid
-from typing import List, Optional, Literal, Tuple
+from typing import List, Optional, Literal, Tuple, Dict, Any
 from uuid import UUID
 from pydantic import BaseModel, Field, PositiveInt, NonNegativeInt
 
@@ -8,6 +8,7 @@ NodeType = Literal[
     "FILE",
     "CLASS",
     "FUNCTION",
+    "IMPORT_BLOCK",
     "NON_FUNCTION_NON_CLASS",
 ]
 
@@ -92,7 +93,16 @@ class ClassNode(CodeNode):
     access_modifier: Optional[AccessModifier] = Field(None, description="Inferred access level ('public', 'protected', 'private') based on name.")
     code_snippet: Optional[str] = Field(None, description="A representative snippet or summary of the top-level code.")
 
+class ImportBlockNode(BaseNode): 
+    """Represents a block of top-level import statements in a file."""
+    node_type: Literal["IMPORT_BLOCK"] = "IMPORT_BLOCK"
+    file_path: str = Field(description="Relative path of the file containing this import block.")
+    belongs_to: UUID = Field(description="ID of the parent File node.")
+    imports: List[Dict[str, Any]] = Field(default_factory=list, description="List of import statement details.")
+    start_line: Optional[PositiveInt] = Field(None, description="Starting line number of the first import (1-based).")
+    end_line: Optional[PositiveInt] = Field(None, description="Ending line number of the last import (1-based).")
+
 class NonFunctionNonClassNode(CodeNode):
-    """Represents top-level code blocks outside functions or classes."""
+    """Represents top-level code blocks outside functions, classes or import blocks."""
     node_type: Literal["NON_FUNCTION_NON_CLASS"] = "NON_FUNCTION_NON_CLASS"
     code_snippet: Optional[str] = Field(None, description="A representative snippet or summary of the top-level code.")

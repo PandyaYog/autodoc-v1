@@ -47,9 +47,10 @@ class DocumentAssembler:
         type_order: Dict[NodeType, int] = {
             "FOLDER": 0,
             "FILE": 1,
-            "CLASS": 2,
-            "FUNCTION": 3, 
-            "NON_FUNCTION_NON_CLASS": 4,
+            "IMPORT_BLOCK": 2,
+            "CLASS": 3,
+            "FUNCTION": 4, 
+            "NON_FUNCTION_NON_CLASS": 5,
         }
 
         children.sort(key=lambda n: (type_order.get(n.node_type, 99), n.name))

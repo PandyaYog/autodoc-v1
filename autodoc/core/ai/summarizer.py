@@ -6,7 +6,7 @@ from uuid import UUID
 
 from ..ckg.graph import CKG
 from ...models.graph import (
-    BaseNode, FunctionNode, ClassNode, FileNode, FolderNode, NonFunctionNonClassNode
+    BaseNode, FunctionNode, ClassNode, ImportBlockNode, FileNode, FolderNode, NonFunctionNonClassNode
 )
 from ...models.settings import Settings 
 from ...services.llm_service import GroqLLMService 
@@ -80,6 +80,14 @@ def _get_class_context(ckg: CKG, node: ClassNode) -> Dict[str, Any]:
             context["methods"].append(f"`{method_desc}`")
 
     return context
+
+def _get_import_block_context(ckg: CKG, node: ImportBlockNode) -> Dict[str, Any]:
+    """Gathers context specifically for an ImportBlockNode."""
+    return {
+        "file_path": node.file_path,
+        "imports": node.imports, 
+        "line_numbers": (node.start_line, node.end_line),
+    }
 
 def _get_non_func_class_context(ckg: CKG, node: NonFunctionNonClassNode) -> Dict[str, Any]:
     """Gathers context specifically for a NonFunctionNonClassNode."""
@@ -192,6 +200,9 @@ async def _summarize_node_task(
             elif isinstance(node, ClassNode):
                 context = _get_class_context(ckg, node)
                 prompt = prompts.generate_class_prompt(**context)
+            elif isinstance(node, ImportBlockNode):
+                context = _get_import_block_context(ckg, node)
+                prompt = prompts.generate_import_block_prompt(**context)
             elif isinstance(node, NonFunctionNonClassNode):
                  context = _get_non_func_class_context(ckg, node)
                  prompt = prompts.generate_non_function_non_class_prompt(**context)

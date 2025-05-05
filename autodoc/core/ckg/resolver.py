@@ -1,10 +1,10 @@
 import logging
 import os
 from pathlib import Path
-from typing import Optional, List, Dict, Tuple, Set
+from typing import Optional, List, Dict, Tuple, Set, Any
 from uuid import UUID
 from .graph import CKG
-from ...models.graph import NodeType, EdgeType, FileNode, ClassNode, FunctionNode, BaseNode, NonFunctionNonClassNode
+from ...models.graph import NodeType, EdgeType, FileNode, ImportBlockNode, ClassNode, FunctionNode, BaseNode, NonFunctionNonClassNode
 
 logger = logging.getLogger(__name__)
 
@@ -59,22 +59,30 @@ def _resolve_relative_import(
 
 
 def _resolve_imports(ckg: CKG):
-    """Resolves IMPORTS edges between FileNodes."""
+    """Resolves IMPORTS edges between FileNodes based on ImportBlockNodes."""
     logger.info("Starting import resolution...")
     resolved_count = 0
-    for file_node in list(ckg.find_nodes(node_type="FILE")): 
-        file_node_nx = ckg.get_node_nx_data(file_node.id)
-        if not file_node_nx or 'ast_results' not in file_node_nx:
-            continue
-
-        ast_results = file_node_nx['ast_results']
-        imports_data = ast_results.get("imports", [])
+    for file_node in list(ckg.find_nodes(node_type="FILE")):
         current_module_path = file_node.module_path
+        import_block_node: Optional[ImportBlockNode] = None
+        imports_data: List[Dict[str, Any]] = []
+
+        for child_node in ckg.get_successors(file_node.id, edge_type="CONTAINS"):
+            if isinstance(child_node, ImportBlockNode):
+                import_block_node = child_node
+                imports_data = import_block_node.imports 
+                break
+
+        if not imports_data:
+            logger.debug(f"No imports found for file: {file_node.file_path}")
+            continue 
 
         import_aliases: Dict[str, str] = {} 
+        file_node_nx = ckg.get_node_nx_data(file_node.id) 
+
         for imp in imports_data:
             target_module_str: Optional[str] = None
-            imported_item_name: Optional[str] = imp.get("name") 
+            imported_item_name: Optional[str] = imp.get("name")
             alias: Optional[str] = imp.get("alias")
 
             if imp["type"] == "import":
@@ -82,101 +90,88 @@ def _resolve_imports(ckg: CKG):
                 if alias:
                     import_aliases[alias] = target_module_str
                 else:
-                    import_aliases[imported_item_name] = target_module_str 
+                    import_aliases[imported_item_name] = target_module_str
             elif imp["type"] == "from":
-
                 level = imp.get("level", 0)
-                module_name = imp.get("module") 
+                module_name = imp.get("module")
+                base_module_path = _resolve_relative_import(current_module_path, level, module_name)
 
-                if level > 0: 
-                    base_module_path = _resolve_relative_import(current_module_path, level, module_name)
-                else:
-                    base_module_path = module_name
-
-                if base_module_path is None:
-                    logger.debug(f"Could not determine base module path for import: {imp} in {file_node.file_path}")
-                    continue
+                if base_module_path is None: continue
 
                 if imported_item_name == "*":
-                    target_module_str = base_module_path
-                    logger.debug(f"Wildcard import detected from '{target_module_str}' in {file_node.file_path}. Specific names not resolved.")
-                    
+                    target_module_str = base_module_path 
+                    logger.debug(f"Wildcard import detected from '{target_module_str}' in {file_node.file_path}.")
                 else:
-                    target_module_str = f"{base_module_path}.{imported_item_name}" 
-                    target_file_module_str = base_module_path
-
+                    target_item_path = f"{base_module_path}.{imported_item_name}"
+                    target_file_module_str = base_module_path 
                     effective_name = alias if alias else imported_item_name
                     if effective_name:
-                         import_aliases[effective_name] = target_module_str
+                         import_aliases[effective_name] = target_item_path
                          import_aliases[f"{effective_name}__base_module"] = target_file_module_str
-
 
                     target_file_id = _find_node_by_module_path(ckg, target_file_module_str)
                     if target_file_id:
                         ckg.add_edge(file_node.id, target_file_id, type="IMPORTS", label=f"from {target_file_module_str} import {imported_item_name}")
                         resolved_count += 1
-                        logger.debug(f"Resolved import: {file_node.name} --[IMPORTS]--> {target_file_module_str} ({target_file_id})")
                     else:
-                        logger.debug(f"Could not resolve imported module file: '{target_file_module_str}' for import in {file_node.file_path}")
+                        logger.debug(f"Could not resolve imported module file: '{target_file_module_str}' for 'from' import in {file_node.file_path}")
                     continue 
-
+                
             if target_module_str:
                 target_file_id = _find_node_by_module_path(ckg, target_module_str)
                 if target_file_id:
                     ckg.add_edge(file_node.id, target_file_id, type="IMPORTS", label=alias)
                     resolved_count += 1
-                    logger.debug(f"Resolved import: {file_node.name} --[IMPORTS]--> {target_module_str} ({target_file_id})")
                 else:
                     logger.debug(f"Could not resolve imported module file: '{target_module_str}' in {file_node.file_path}")
 
-        file_node_nx['import_aliases'] = import_aliases
+        if file_node_nx:
+            file_node_nx['import_aliases'] = import_aliases
+        else:
+             logger.warning(f"Could not retrieve networkx data for FileNode {file_node.id} to store import aliases.")
 
     logger.info(f"Import resolution finished. Added {resolved_count} IMPORTS edges.")
-
 
 def _resolve_inheritance(ckg: CKG):
     """Resolves INHERITS_FROM edges between ClassNodes."""
     logger.info("Starting inheritance resolution...")
     resolved_count = 0
     for class_node in list(ckg.find_nodes(node_type="CLASS")):
-        containing_file_node = ckg.get_node(class_node.belongs_to)
-        if not containing_file_node or containing_file_node.node_type != "FILE":
-             logger.warning(f"ClassNode {class_node.name} ({class_node.id}) has invalid parent {class_node.belongs_to}. Skipping inheritance resolution.")
-             continue
+        containing_file_id = class_node.belongs_to
+        file_node_nx = ckg.get_node_nx_data(containing_file_id)
 
-        file_node_nx = ckg.get_node_nx_data(containing_file_node.id)
-        if not file_node_nx or 'ast_results' not in file_node_nx:
-            logger.warning(f"AST results not found for file {containing_file_node.file_path} containing class {class_node.name}. Skipping inheritance resolution.")
+        if not file_node_nx or 'ast_classes' not in file_node_nx:
+            logger.warning(f"AST class details not found for file {containing_file_id} containing class {class_node.name}. Skipping inheritance resolution.")
             continue
 
-        ast_results = file_node_nx['ast_results']
+        ast_classes = file_node_nx['ast_classes']
         base_names: List[str] = []
-        for cls_data in ast_results.get("classes", []):
+        for cls_data in ast_classes:
             if cls_data["name"] == class_node.name and cls_data["start_line"] == class_node.start_line:
                 base_names = cls_data.get("bases", [])
                 break
 
         if not base_names:
-            continue 
+            continue
+
         for base_name in base_names:
             matching_parent_ids = _find_class_node_by_name(ckg, base_name)
-
             if not matching_parent_ids:
                 logger.debug(f"Could not resolve base class '{base_name}' for class '{class_node.name}' in {class_node.file_path}.")
             else:
                 for parent_id in matching_parent_ids:
-                    if parent_id == class_node.id: continue 
+                    if parent_id == class_node.id:
+                        continue
                     try:
                         ckg.add_edge(class_node.id, parent_id, type="INHERITS_FROM")
                         resolved_count += 1
                         logger.debug(f"Resolved inheritance: {class_node.name} --[INHERITS_FROM]--> {base_name} ({parent_id})")
                     except KeyError as e:
-                         logger.error(f"Error adding INHERITS_FROM edge from {class_node.id} to {parent_id}: {e}")
+                        logger.error(f"Error adding INHERITS_FROM edge from {class_node.id} to {parent_id}: {e}")
                 if len(matching_parent_ids) > 1:
-                     logger.warning(f"Class '{class_node.name}' inherits from '{base_name}', which resolved to multiple nodes: {matching_parent_ids}. Added edges to all.")
+                    logger.warning(f"Class '{class_node.name}' inherits from '{base_name}', which resolved to multiple nodes: {matching_parent_ids}. Added edges to all.")
 
     logger.info(f"Inheritance resolution finished. Added {resolved_count} INHERITS_FROM edges.")
-
 
 def _resolve_calls(ckg: CKG):
     """Resolves CALLS edges between Function/Method nodes."""
@@ -186,82 +181,79 @@ def _resolve_calls(ckg: CKG):
 
     for file_node in list(ckg.find_nodes(node_type="FILE")):
         file_node_nx = ckg.get_node_nx_data(file_node.id)
-        if not file_node_nx or 'ast_results' not in file_node_nx or 'node_map' not in file_node_nx:
+        if not file_node_nx or 'ast_calls' not in file_node_nx or 'node_map' not in file_node_nx:
             continue
 
-        ast_results = file_node_nx['ast_results']
-        node_map = file_node_nx['node_map'] 
+        calls_data = file_node_nx['ast_calls']
+        node_map = file_node_nx['node_map']
         import_aliases = file_node_nx.get('import_aliases', {})
-        calls_data = ast_results.get("calls", [])
 
         for call in calls_data:
             caller_type = call["caller_type"]
             caller_name = call["caller_name"]
-            caller_lines = tuple(call["caller_lines"]) 
-            call_name_str = call["call_name"] 
+            caller_lines = tuple(call["caller_lines"])
+            call_name_str = call["call_name"]
             call_line = call["line"]
 
             caller_node_id: Optional[UUID] = None
             if caller_type == "FILE":
                 caller_node_id = file_node.id
             elif caller_type in ["FUNCTION", "CLASS", "TOP_LEVEL"]:
-                 map_key: Optional[Tuple] = None
-                 if caller_type == "FUNCTION":
-                     map_key = ("FUNCTION", caller_name, caller_lines[0])
-                 elif caller_type == "CLASS":
-                      map_key = ("CLASS", caller_name, caller_lines[0])
-                 elif caller_type == "TOP_LEVEL":
-                      for node in ckg.find_nodes(node_type="NON_FUNCTION_NON_CLASS", name=caller_name, start_line=caller_lines[0]):
-                          if node.belongs_to == file_node.id:
-                              caller_node_id = node.id
-                              break
-                 if map_key and map_key in node_map:
-                     caller_node_id = node_map[map_key]
+                map_key: Optional[Tuple] = None
+                if caller_type == "FUNCTION":
+                    map_key = ("FUNCTION", caller_name, caller_lines[0])
+                elif caller_type == "CLASS":
+                    map_key = ("CLASS", caller_name, caller_lines[0])
+                elif caller_type == "TOP_LEVEL":
+                    for node in ckg.find_nodes(node_type="NON_FUNCTION_NON_CLASS", name=caller_name, start_line=caller_lines[0]):
+                        if node.belongs_to == file_node.id:
+                            caller_node_id = node.id
+                            break
+                if map_key and map_key in node_map:
+                    caller_node_id = node_map[map_key]
 
             if not caller_node_id:
                 logger.warning(f"Could not find caller node for call '{call_name_str}' at {file_node.file_path}:{call_line} (Caller context: {caller_type} '{caller_name}' L{caller_lines[0]})")
                 continue
 
             target_node_ids: List[UUID] = []
-
-            potential_key = ("FUNCTION", call_name_str, None) # We don't know start line here
+            potential_key_prefix = ("FUNCTION", call_name_str)
             for (ntype, nname, nline), nid in node_map.items():
-                 if ntype == "FUNCTION" and nname == call_name_str:
-                     target_node_ids.append(nid)
-                     logger.debug(f"Call resolution: Found '{call_name_str}' in same file ({nid})")
-                     break 
-                 
+                if ntype == "FUNCTION" and nname == call_name_str:
+                    target_node_ids.append(nid)
+                    logger.debug(f"Call resolution: Found '{call_name_str}' in same file ({nid})")
+                    break
+
             if not target_node_ids:
                 parts = call_name_str.split('.', 1)
                 first_part = parts[0]
                 rest_part = parts[1] if len(parts) > 1 else None
-
                 if first_part in import_aliases:
                     resolved_import_target = import_aliases[first_part]
-                    base_module_path = import_aliases.get(f"{first_part}__base_module", resolved_import_target) # Get base if 'from' import
-
+                    base_module_path = import_aliases.get(f"{first_part}__base_module", resolved_import_target)
                     target_file_id = _find_node_by_module_path(ckg, base_module_path)
                     if target_file_id:
                         target_file_node = ckg.get_node(target_file_id)
                         target_file_nx = ckg.get_node_nx_data(target_file_id)
-                        if target_file_node and target_file_nx and 'node_map' in target_file_nx:
+                        if target_file_nx and 'node_map' in target_file_nx:
                             target_node_map = target_file_nx['node_map']
-                            func_name_to_find = rest_part if rest_part else first_part 
-                            if func_name_to_find: 
+                            func_name_to_find = rest_part if rest_part else first_part
+                            if func_name_to_find:
                                 for (ntype, nname, nline), nid in target_node_map.items():
                                     if ntype == "FUNCTION" and nname == func_name_to_find:
                                         target_node_ids.append(nid)
                                         logger.debug(f"Call resolution: Found imported '{call_name_str}' in {target_file_node.name} ({nid})")
-                                        break 
+                                        break
+
             if target_node_ids:
                 for target_id in target_node_ids:
-                     if caller_node_id == target_id: continue # Skip self-calls for now?
-                     try:
-                         ckg.add_edge(caller_node_id, target_id, type="CALLS")
-                         resolved_count += 1
-                         
-                     except KeyError as e:
-                         logger.error(f"Error adding CALLS edge from {caller_node_id} to {target_id}: {e}")
+                    if caller_node_id == target_id:
+                        continue
+                    try:
+                        ckg.add_edge(caller_node_id, target_id, type="CALLS")
+                        resolved_count += 1
+                    except KeyError as e:
+                        logger.error(f"Error adding CALLS edge from {caller_node_id} to {target_id}: {e}")
             else:
                 logger.debug(f"Could not resolve call target '{call_name_str}' from {caller_type} '{caller_name}' in {file_node.file_path}:{call_line}")
                 unresolved_count += 1
@@ -273,7 +265,7 @@ def _resolve_used_imports(ckg: CKG):
     """Resolves USES_IMPORT edges from CodeNodes to imported FileNodes."""
     logger.info("Starting used import resolution...")
     resolved_count = 0
-    processed_nodes : Set[UUID] = set() 
+    processed_nodes: Set[UUID] = set()
 
     code_node_types: List[NodeType] = ["FUNCTION", "CLASS", "NON_FUNCTION_NON_CLASS"]
     for node_type in code_node_types:
@@ -282,77 +274,54 @@ def _resolve_used_imports(ckg: CKG):
                 continue
 
             containing_file_id: Optional[UUID] = None
-            if isinstance(code_node, (FunctionNode, NonFunctionNonClassNode)):
-                belongs_to_node = ckg.get_node(code_node.belongs_to)
-                if belongs_to_node and belongs_to_node.node_type == "FILE":
-                    containing_file_id = code_node.belongs_to
-                elif isinstance(code_node, FunctionNode) and code_node.is_method:
-                    class_node = ckg.get_node(code_node.belongs_to)
-                    if class_node and class_node.node_type == "CLASS":
-                        containing_file_id = class_node.belongs_to
-
-            elif isinstance(code_node, ClassNode):
-                containing_file_id = code_node.belongs_to
+            if isinstance(code_node, (FunctionNode, NonFunctionNonClassNode, ClassNode)):
+                parent_id = code_node.belongs_to
+                parent_node = ckg.get_node(parent_id)
+                if parent_node:
+                    if parent_node.node_type == "FILE":
+                        containing_file_id = parent_id
+                    elif parent_node.node_type == "CLASS":
+                        containing_file_id = parent_node.belongs_to
 
             if not containing_file_id:
-                 logger.warning(f"Could not find containing file for CodeNode {code_node.name} ({code_node.id}). Skipping used import resolution.")
-                 processed_nodes.add(code_node.id)
-                 continue
-
-            file_node_nx = ckg.get_node_nx_data(containing_file_id)
-            if not file_node_nx or 'ast_results' not in file_node_nx or 'import_aliases' not in file_node_nx:
-                logger.warning(f"Required data (ast_results/import_aliases) not found for file {containing_file_id} containing node {code_node.name}. Skipping used import resolution.")
+                logger.warning(f"Could not find containing file for CodeNode {code_node.name} ({code_node.id}). Skipping used import resolution.")
                 processed_nodes.add(code_node.id)
                 continue
 
-            ast_results = file_node_nx['ast_results']
-            import_aliases = file_node_nx['import_aliases'] 
-            used_names_in_code: List[str] = []
+            file_node_nx = ckg.get_node_nx_data(containing_file_id)
+            if not file_node_nx or 'import_aliases' not in file_node_nx:
+                logger.warning(f"Import aliases not found for file {containing_file_id} containing node {code_node.name}. Skipping used import resolution.")
+                processed_nodes.add(code_node.id)
+                continue
+            import_aliases = file_node_nx['import_aliases']
 
-            source_data_list = []
-            if node_type == "FUNCTION":
-                source_data_list = ast_results.get("functions", [])
-                if not any(f["name"] == code_node.name and f["start_line"] == code_node.start_line for f in source_data_list):
-                     for cls_data in ast_results.get("classes", []):
-                         source_data_list = cls_data.get("methods", [])
-                         if any(m["name"] == code_node.name and m["start_line"] == code_node.start_line for m in source_data_list):
-                             break 
-            elif node_type == "CLASS":
-                 source_data_list = ast_results.get("classes", [])
-            elif node_type == "NON_FUNCTION_NON_CLASS":
-                 source_data_list = ast_results.get("top_level_code", [])
-
-            for data in source_data_list:
-                if data["name"] == code_node.name and data["start_line"] == code_node.start_line:
-                    used_names_in_code = data.get("used_names", [])
-                    break
+            used_names_in_code: List[str] = getattr(code_node, 'imports_used', [])
+            if not hasattr(code_node, 'imports_used'):
+                logger.warning(f"'imports_used' attribute not found on {node_type} node {code_node.name}. Requires update in traversal.py")
+                processed_nodes.add(code_node.id)
+                continue
 
             if not used_names_in_code:
-                 processed_nodes.add(code_node.id)
-                 continue
+                processed_nodes.add(code_node.id)
+                continue
 
-            imported_file_ids: Set[UUID] = set()
-            for target_node in ckg.get_successors(containing_file_id, edge_type="IMPORTS"):
-                if target_node.node_type == "FILE":
-                    imported_file_ids.add(target_node.id)
+            imported_file_ids: Set[UUID] = {
+                target_node.id for target_node in ckg.get_successors(containing_file_id, edge_type="IMPORTS")
+                if target_node.node_type == "FILE"
+            }
 
             for name in used_names_in_code:
                 target_path = import_aliases.get(name)
                 base_module_path = import_aliases.get(f"{name}__base_module", target_path)
-
                 parts = name.split('.', 1)
                 if not target_path and parts[0] in import_aliases:
-                     target_path = import_aliases[parts[0]] # e.g., used 'np.array', alias is 'np'
-                     base_module_path = import_aliases.get(f"{parts[0]}__base_module", target_path)
+                    target_path = import_aliases[parts[0]]
+                    base_module_path = import_aliases.get(f"{parts[0]}__base_module", target_path)
 
                 if base_module_path:
                     target_file_id = _find_node_by_module_path(ckg, base_module_path)
                     if target_file_id and target_file_id in imported_file_ids:
-                        edge_exists = False
-                        for edge in ckg.get_out_edges(code_node.id, edge_type="USES_IMPORT"):
-                            if edge.target_id == target_file_id:
-                                edge_exists = True
-                                break
+                        edge_exists = any(edge.target_id == target_file_id for edge in ckg.get_out_edges(code_node.id, edge_type="USES_IMPORT"))
                         if not edge_exists:
                             try:
                                 ckg.add_edge(code_node.id, target_file_id, type="USES_IMPORT")
@@ -362,24 +331,25 @@ def _resolve_used_imports(ckg: CKG):
 
             processed_nodes.add(code_node.id)
 
-
     logger.info(f"Used import resolution finished. Added {resolved_count} USES_IMPORT edges.")
-
 
 def _cleanup_temporary_data(ckg: CKG):
     """Removes temporary data attached to nodes after resolution."""
-    logger.info("Cleaning up temporary AST results from CKG nodes...")
+    logger.info("Cleaning up temporary AST/resolver data from CKG nodes...")
     count = 0
-    for node_id, node_attrs in ckg.graph.nodes(data=True):
-        if 'ast_results' in node_attrs:
-            del node_attrs['ast_results']
-            count += 1
-        if 'node_map' in node_attrs:
-            del node_attrs['node_map']
-        if 'import_aliases' in node_attrs:
-             del node_attrs['import_aliases']
+    for node in list(ckg.find_nodes(node_type="FILE")):
+        node_attrs = ckg.get_node_nx_data(node.id)
+        if node_attrs:
+            keys_to_remove = ['ast_calls', 'node_map', 'import_aliases', 'ast_classes']
+            removed_key = False
+            for key in keys_to_remove:
+                if key in node_attrs:
+                    del node_attrs[key]
+                    removed_key = True
+            if removed_key:
+                count += 1
 
-    logger.info(f"Removed temporary data from {count} nodes.")
+    logger.info(f"Removed temporary data from {count} FileNodes.")
 
 def resolve_ckg_edges(ckg: CKG):
     """
