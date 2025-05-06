@@ -69,30 +69,29 @@ async def generate_documentation(
     Main endpoint to handle documentation generation requests.
     """
     start_time = time.time()
-    filename = upload_file.filename or "uploaded_file.zip"
-    logger.info(f"Received request to generate documentation for: {filename}")
+    original_zip_filename = upload_file.filename or "uploaded_codebase.zip"
+    logger.info(f"Received request to generate documentation for: {original_zip_filename}")
 
     temp_dir_obj = None
 
     try:
-        logger.debug(f"Validating file: {filename}")
+        logger.debug(f"Validating file: {original_zip_filename}")
         await validate_uploaded_file(upload_file, settings)
-        logger.info(f"Validation successful for: {filename}")
+        logger.info(f"Validation successful for: {original_zip_filename}")
 
         logger.debug("Creating secure temporary directory...")
         with create_secure_temp_dir(base_path=settings.temp_dir_base) as temp_dir_obj:
             extraction_path = temp_dir_obj.name
-            logger.info(f"Extracting '{filename}' to temporary directory: {extraction_path}")
-
+            logger.info(f"Extracting '{original_zip_filename}' to temporary directory: {extraction_path}")
             await upload_file.seek(0)
             await extract_code(upload_file, extraction_path, settings)
-            logger.info(f"Extraction successful for: {filename}")
+            logger.info(f"Extraction successful for: {original_zip_filename}")
 
             logger.info("Starting CKG construction (traversal)...")
-            ckg = build_ckg_from_path(extraction_path)
+            ckg = build_ckg_from_path(extraction_path, root_name=original_zip_filename)
             if len(ckg) == 0:
-                 logger.warning("CKG construction resulted in an empty graph.")
-                 
+                logger.warning("CKG construction resulted in an empty graph.")
+
             logger.info("Starting CKG edge resolution...")
             resolve_ckg_edges(ckg)
 
@@ -107,21 +106,21 @@ async def generate_documentation(
 
             end_time = time.time()
             processing_time = end_time - start_time
-            logger.info(f"Successfully generated documentation for '{filename}' in {processing_time:.2f} seconds.")
+            logger.info(f"Successfully generated documentation for '{original_zip_filename}' in {processing_time:.2f} seconds.")
             return SuccessResponse(
                 documentation=markdown_content,
-                message=f"Documentation generated successfully for {filename}."
+                message=f"Documentation generated successfully for {original_zip_filename}."
             )
 
     except InvalidFileTypeException as e:
         logger.error(f"Invalid file type error: {e}")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except FileSizeExceededException as e:
-         logger.error(f"File size exceeded error: {e}")
-         raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=str(e))
+        logger.error(f"File size exceeded error: {e}")
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=str(e))
     except SecurityScanException as e:
-         logger.error(f"Security scan failed: {e}")
-         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        logger.error(f"Security scan failed: {e}")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except ValidationException as e: 
         logger.error(f"Validation error: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Input validation failed: {e}")
@@ -132,9 +131,9 @@ async def generate_documentation(
         logger.error(f"Extraction error: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Code extraction failed: {e}")
     except HTTPException:
-         raise
+        raise
     except Exception as e:
-        logger.critical(f"Unexpected internal server error during documentation generation for '{filename}': {e}", exc_info=True)
+        logger.critical(f"Unexpected internal server error during documentation generation for '{original_zip_filename}': {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"An unexpected error occurred during documentation generation: {type(e).__name__}",

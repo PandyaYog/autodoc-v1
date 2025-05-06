@@ -217,10 +217,12 @@ def _traverse_directory(
     current_path: Path,
     project_root: Path,
     parent_node_id: Optional[UUID],
-    current_depth: int
+    current_depth: int,
+    root_name: Optional[str] = None
 ):
     """
     Recursively traverses directories using DFS, processing files and subdirectories.
+    Uses root_name for the top-level folder node if provided.
     """
     if not current_path.is_dir():
         logger.warning(f"Traversal path is not a directory: {current_path}. Skipping.")
@@ -229,8 +231,10 @@ def _traverse_directory(
     logger.debug(f"Traversing directory: {current_path} at depth {current_depth}")
     relative_path = current_path.relative_to(project_root)
 
+    node_name = root_name if current_depth == 0 and root_name else current_path.name
+
     folder_node = FolderNode(
-        name=current_path.name,
+        name=node_name,
         file_path=str(relative_path),
         depth=current_depth,
         belongs_to=parent_node_id,
@@ -271,7 +275,8 @@ def _traverse_directory(
                 current_path=dir_item,
                 project_root=project_root,
                 parent_node_id=folder_node_id,
-                current_depth=current_depth + 1
+                current_depth=current_depth + 1,
+                root_name=root_name
             )
 
     except OSError as e:
@@ -279,14 +284,14 @@ def _traverse_directory(
     except Exception as e:
         logger.error(f"Unexpected error traversing directory {current_path}: {e}", exc_info=True)
 
-
-def build_ckg_from_path(extracted_code_path: str) -> CKG:
+def build_ckg_from_path(extracted_code_path: str, root_name: Optional[str] = None) -> CKG:
     """
     Builds the Code Knowledge Graph by traversing the extracted code directory.
 
     Args:
         extracted_code_path: The absolute path to the root directory
                              containing the extracted Python code.
+        root_name: The desired name for the top-level root node (e.g., original zip filename).
 
     Returns:
         The populated CKG instance.
@@ -304,7 +309,8 @@ def build_ckg_from_path(extracted_code_path: str) -> CKG:
         current_path=project_root,
         project_root=project_root,
         parent_node_id=None,
-        current_depth=0
+        current_depth=0,
+        root_name=root_name
     )
 
     logger.info(f"Finished initial CKG traversal. Found {len(ckg)} nodes. Max depth: {ckg.max_depth}. Ready for resolution phase.")
