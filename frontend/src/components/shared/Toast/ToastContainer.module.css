@@ -1,0 +1,22 @@
+.container {
+  position: fixed;
+  bottom: var(--space-xl);
+  right: var(--space-xl);
+  z-index: var(--z-toast);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  pointer-events: none; /* Let clicks pass through the gap between toasts */
+}
+
+.container > * {
+  pointer-events: all; /* But re-enable on the toasts themselves */
+}
+
+@media (max-width: 480px) {
+  .container {
+    bottom: var(--space-md);
+    right: var(--space-md);
+    left: var(--space-md);
+  }
+}

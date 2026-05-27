@@ -4,3 +4,9 @@ __pycache__
 ckg_data.json
 ckg_visualization.png
 /venv
+
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/.env.local
+frontend/.env.*.local

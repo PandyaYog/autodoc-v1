@@ -56,6 +56,23 @@ app.include_router(
     tags=["Documentation"] 
 )
 
+# ── CORS ─────────────────────────────────────────────────────────
+# Allow the Vite dev server (and any configured frontend origin)
+# to call the API and download PDFs directly.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",   # Vite dev server
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",   # in case of future CRA / Next.js
+        "*",                       # fallback for production — tighten before public deployment
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["Content-Disposition"],  # needed for PDF filename hints
+)
+
 @app.get("/health", tags=["Health"], status_code=status.HTTP_200_OK)
 async def health_check():
     """

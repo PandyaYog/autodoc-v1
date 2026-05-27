@@ -1,0 +1,248 @@
+/* ================================================================
+   ProcessingPage styles
+   ================================================================ */
+
+.page {
+  min-height: calc(100vh - var(--navbar-height));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-2xl) var(--space-xl);
+  background: radial-gradient(
+    ellipse 80% 60% at 50% 50%,
+    rgba(91, 69, 224, 0.12) 0%,
+    transparent 70%
+  ), var(--color-bg);
+  animation: fadeIn 0.4s var(--transition-base) both;
+}
+
+.card {
+  width: 100%;
+  max-width: 480px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2xl);
+  padding: var(--space-3xl) var(--space-2xl);
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-lg);
+  text-align: center;
+}
+
+/* ================================================================
+   ORBITAL ANIMATION
+   ================================================================ */
+.orbital {
+  position: relative;
+  width: 160px;
+  height: 160px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ── Core (center pulsing orb) ── */
+.core {
+  position: absolute;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+}
+
+.coreInner {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--color-accent) 0%, #a78bfa 100%);
+  box-shadow: 0 0 16px var(--color-accent-glow);
+}
+
+.corePulse {
+  position: absolute;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: var(--color-accent-glow);
+  animation: corePulse 2.4s ease-in-out infinite;
+}
+
+@keyframes corePulse {
+  0%, 100% { transform: scale(0.8); opacity: 0.6; }
+  50%       { transform: scale(1.2); opacity: 0.15; }
+}
+
+/* ── Rings ── */
+.ring {
+  position: absolute;
+  border-radius: 50%;
+  border: 1px solid var(--color-border-strong);
+}
+
+.ring1 {
+  width: 72px;
+  height: 72px;
+  animation: spinCW 3s linear infinite;
+}
+
+.ring2 {
+  width: 110px;
+  height: 110px;
+  animation: spinCCW 5s linear infinite;
+}
+
+.ring3 {
+  width: 152px;
+  height: 152px;
+  animation: spinCW 9s linear infinite;
+}
+
+@keyframes spinCW  { to { transform: rotate(360deg);  } }
+@keyframes spinCCW { to { transform: rotate(-360deg); } }
+
+/* ── Orbiting dots ── */
+.dot {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  top: -4px;      /* sit on top edge of ring */
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.dotAccent {
+  background: var(--color-accent);
+  box-shadow: 0 0 8px var(--color-accent);
+  width: 10px;
+  height: 10px;
+  top: -5px;
+}
+
+.dotBlue {
+  background: #60a5fa;
+  box-shadow: 0 0 6px rgba(96, 165, 250, 0.8);
+  top: -4px;
+}
+
+/* second dot on ring2, placed at bottom */
+.dotBlue2 {
+  background: #a78bfa;
+  box-shadow: 0 0 6px rgba(167, 139, 250, 0.8);
+  top: unset;
+  bottom: -4px;
+}
+
+.dotGreen {
+  background: var(--color-success);
+  box-shadow: 0 0 8px rgba(45, 212, 164, 0.8);
+  top: -4px;
+}
+
+/* ================================================================
+   STATUS COPY
+   ================================================================ */
+.copy {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-md);
+}
+
+.headline {
+  font-size: var(--text-2xl);
+  font-weight: var(--font-bold);
+  letter-spacing: -0.02em;
+  color: var(--color-text-primary);
+}
+
+/* Phase text fade */
+.phaseWrap {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  transition: opacity 0.4s ease, transform 0.4s ease;
+  min-height: 28px;
+}
+
+.fadeIn {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.fadeOut {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+.phaseIcon {
+  font-size: var(--text-base);
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.phaseText {
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--color-accent);
+}
+
+.note {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  line-height: var(--leading-relaxed);
+  max-width: 320px;
+}
+
+/* ================================================================
+   INDETERMINATE PROGRESS BAR
+   ================================================================ */
+.progressTrack {
+  width: 100%;
+  height: 4px;
+  background-color: var(--color-border);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+  position: relative;
+}
+
+.progressSweep {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  width: 40%;
+  border-radius: var(--radius-full);
+  background: linear-gradient(90deg, transparent 0%, var(--color-accent) 40%, #a78bfa 70%, transparent 100%);
+  animation: sweep 2s ease-in-out infinite;
+}
+
+@keyframes sweep {
+  0%   { left: -40%; }
+  100% { left: 100%; }
+}
+
+/* ================================================================
+   PHASE DOTS
+   ================================================================ */
+.phaseDots {
+  display: flex;
+  gap: var(--space-sm);
+}
+
+.phaseDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: var(--color-border-strong);
+  transition: background-color var(--transition-base), transform var(--transition-spring);
+}
+
+.phaseDotActive {
+  background-color: var(--color-accent);
+  transform: scale(1.4);
+}
