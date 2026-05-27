@@ -15,18 +15,33 @@ from .exceptions import (
 
 logger = logging.getLogger(__name__)
 
+# Extensions extracted alongside .py files
+NON_PYTHON_SUPPORTED_EXTENSIONS: set = {
+    '.md', '.txt', '.rst', '.yaml', '.yml', '.toml',
+    # Web asset / data file types
+    '.json', '.html', '.htm', '.css',
+}
+JS_TS_SUPPORTED_EXTENSIONS: set = {'.js', '.jsx', '.ts', '.tsx'}
+# Exact filenames (lower-cased) that are extracted even without a recognised extension
+NON_PYTHON_SUPPORTED_FILENAMES: set = {'dockerfile'}
+
 DEFAULT_EXCLUSION_PATTERNS = [
     "__pycache__/*",
     ".git/*",
     "venv/*",
-    ".*/",          
-    ".*",           
+    ".*/",
+    ".*",
     "*.log",
     "*.tmp",
     "*.bak",
     "*.swp",
     "*.pyc",
     "*.pyo",
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "*.min.js",
+    "*.min.css",
 ]
 
 async def extract_code(
@@ -53,7 +68,12 @@ async def extract_code(
         ExtractionFailedError: If any other error occurs during extraction.
 
     Returns:
-        None on successful extraction.
+        A dict with keys:
+          - 'extracted_count'       : number of .py files extracted
+          - 'js_ts_extracted_count' : number of .js, .ts, .jsx, .tsx files extracted
+          - 'config_extracted_count': number of supported non-Python files extracted
+          - 'skipped_count'         : total members skipped (excluded + unsupported)
+          - 'non_python_count'      : count of *unsupported* non-.py files (e.g. .js, .ts)
     """
     filename = upload_file.filename or "unknown_file"
     logger.info(f"Starting extraction for '{filename}' into '{target_base_dir}'")
@@ -70,7 +90,10 @@ async def extract_code(
                 logger.debug(f"Opened '{filename}' as ZipFile. Contains {len(zf.infolist())} members.")
 
                 extracted_count = 0
+                js_ts_extracted_count = 0
+                config_extracted_count = 0
                 skipped_count = 0
+                non_python_count = 0
                 for member_info in zf.infolist():
                     member_path_raw = member_info.filename
                     member_path = member_path_raw.replace('\\', '/')
@@ -79,34 +102,61 @@ async def extract_code(
                              logger.debug(f"Skipping excluded directory: '{member_path}'")
                              skipped_count += 1
                              continue
-                        logger.debug(f"Processing directory entry: '{member_path}' (will be created if needed by file extraction)")
+                        logger.debug(f"Processing directory entry: '{member_path}'")
 
                     if any(fnmatch.fnmatch(member_path, pattern) for pattern in exclusion_patterns):
                         logger.debug(f"Skipping excluded member: '{member_path}'")
                         skipped_count += 1
                         continue
 
-                    is_py_file = not member_info.is_dir() and member_path.lower().endswith('.py')
-                    if not member_info.is_dir() and not is_py_file:
-                         logger.debug(f"Skipping non-.py file: '{member_path}'")
-                         skipped_count += 1
-                         continue
+                    if member_info.is_dir():
+                        continue
+
+                    fname_lower = Path(member_path).name.lower()
+                    ext_lower = Path(member_path).suffix.lower()
+
+                    is_py_file = ext_lower == '.py'
+                    is_js_ts_file = ext_lower in JS_TS_SUPPORTED_EXTENSIONS
+                    is_supported_config = (
+                        ext_lower in NON_PYTHON_SUPPORTED_EXTENSIONS
+                        or fname_lower in NON_PYTHON_SUPPORTED_FILENAMES
+                    )
+
+                    if not is_py_file and not is_js_ts_file and not is_supported_config:
+                        logger.debug(f"Skipping unsupported file: '{member_path}'")
+                        non_python_count += 1
+                        skipped_count += 1
+                        continue
 
                     if not is_safe_path(target_base_dir, member_path):
-                        logger.error(f"Unsafe path detected in '{filename}': Member '{member_path}' attempts to escape target directory '{target_base_dir}'.")
+                        logger.error(f"Unsafe path detected: '{member_path}' escapes '{target_base_dir}'.")
                         raise ExtractionSecurityError(filename, member_path, target_base_dir)
 
                     try:
+                        logger.debug(f"Extracting '{member_path}' to '{target_base_dir}'")
+                        zf.extract(member_info, path=target_base_dir)
                         if is_py_file:
-                            logger.debug(f"Extracting '{member_path}' to '{target_base_dir}'")
-                            zf.extract(member_info, path=target_base_dir)
                             extracted_count += 1
-                        
+                        elif is_js_ts_file:
+                            js_ts_extracted_count += 1
+                        else:
+                            config_extracted_count += 1
                     except Exception as extract_err:
-                        logger.error(f"Error extracting member '{member_path}' from '{filename}': {extract_err}", exc_info=True)
+                        logger.error(f"Error extracting '{member_path}' from '{filename}': {extract_err}", exc_info=True)
                         raise ExtractionFailedError(filename, f"Error extracting member '{member_path}': {extract_err}")
 
-                logger.info(f"Extraction complete for '{filename}'. Extracted {extracted_count} .py files, skipped {skipped_count} members.")
+                logger.info(
+                    f"Extraction complete for '{filename}'. "
+                    f"Python files: {extracted_count}, JS/TS files: {js_ts_extracted_count}, Config/doc files: {config_extracted_count}, "
+                    f"Skipped (unsupported): {non_python_count}."
+                )
+                return {
+                    "extracted_count": extracted_count,
+                    "js_ts_extracted_count": js_ts_extracted_count,
+                    "config_extracted_count": config_extracted_count,
+                    "skipped_count": skipped_count,
+                    "non_python_count": non_python_count,
+                }
 
     except zipfile.BadZipFile:
         logger.error(f"File '{filename}' is not a valid ZIP archive (BadZipFile during extraction).")

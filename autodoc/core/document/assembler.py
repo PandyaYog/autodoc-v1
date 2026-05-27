@@ -2,12 +2,13 @@ import logging
 from typing import List, Set, Dict
 from uuid import UUID
 from ..ckg.graph import CKG
-from ...models.graph import BaseNode, NodeType
-from .formatters import format_node_markdown
 from ...models.graph import (
     BaseNode, FolderNode, FileNode, ClassNode, FunctionNode,
-    ImportBlockNode, NonFunctionNonClassNode, NodeType
+    ImportBlockNode, NonFunctionNonClassNode, NodeType,
+    NonPythonFileNode, NON_PYTHON_NODE_TYPES,
+    ReactComponentNode, ReactHookNode,
 )
+from .formatters import format_node_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +40,9 @@ class DocumentAssembler:
             logger.warning(f"Node {node.id} not found while getting successors.")
             return []
 
-        children = [c for c in children if c.node_type in ["FOLDER", "FILE"]]
-        type_order: Dict[NodeType, int] = {"FOLDER": 0, "FILE": 1}
-        children.sort(key=lambda n: (type_order.get(n.node_type, 99), n.name))
+        children = [c for c in children if c.node_type in {"FOLDER", "FILE"} | NON_PYTHON_NODE_TYPES]
+        type_order: Dict[str, int] = {"FOLDER": 0, "FILE": 1}
+        children.sort(key=lambda n: (type_order.get(n.node_type, 2), n.name))
         return [child.id for child in children]
 
     def _get_file_children_sorted_by_line(self, node: FileNode) -> List[BaseNode]:
@@ -58,7 +59,7 @@ class DocumentAssembler:
 
         relevant_children = []
         for child in children:
-            if child.node_type in ["IMPORT_BLOCK", "CLASS", "FUNCTION", "NON_FUNCTION_NON_CLASS"]:
+            if child.node_type in ["IMPORT_BLOCK", "CLASS", "FUNCTION", "NON_FUNCTION_NON_CLASS", "REACT_COMPONENT", "REACT_HOOK"]:
                 if hasattr(child, 'start_line') and child.start_line is not None:
                     relevant_children.append(child)
                 else:
@@ -108,6 +109,12 @@ class DocumentAssembler:
             for child_id in children_ids:
                 self._assemble_recursive(child_id, current_heading_level + 1)
 
+        elif isinstance(node, NonPythonFileNode):
+            # Non-Python files are leaf nodes — format and append directly
+            logger.debug(f"Assembling {node.node_type}: {node.name} (ID: {node.id}) at level {level}")
+            formatted_markdown = format_node_markdown(node, level)
+            self.markdown_parts.append(formatted_markdown)
+
         elif isinstance(node, FileNode):
             logger.debug(f"Assembling FILE: {node.name} (ID: {node.id}) at level {level}")
             formatted_markdown = format_node_markdown(node, level)
@@ -140,6 +147,12 @@ class DocumentAssembler:
                         logger.debug(f"  Processing FUNCTION child: {child_node.name}")
                         func_markdown = format_node_markdown(child_node, child_level)
                         self.markdown_parts.append(func_markdown)
+
+                elif isinstance(child_node, (ReactComponentNode, ReactHookNode)):
+                    if child_node.id not in processed_method_ids:
+                        logger.debug(f"  Processing {child_node.node_type} child: {child_node.name}")
+                        react_markdown = format_node_markdown(child_node, child_level)
+                        self.markdown_parts.append(react_markdown)
 
                 elif isinstance(child_node, (ImportBlockNode, NonFunctionNonClassNode)):
                     logger.debug(f"  Processing {child_node.node_type} child: {child_node.name}")

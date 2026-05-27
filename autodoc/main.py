@@ -1,11 +1,13 @@
+import asyncio
 import logging
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from fastapi.middleware.cors import CORSMiddleware 
+from fastapi.middleware.cors import CORSMiddleware
 from .config import settings
 from .api.routes import documentation as documentation_router
 from .models.responses import ErrorResponse, ValidationErrorDetail
+from .services.task_store import task_store
 
 log_level_str = settings.log_level
 numeric_level = getattr(logging, log_level_str.upper(), logging.INFO)
@@ -67,16 +69,34 @@ async def health_check():
 async def startup_event():
     """
     Actions to perform when the application starts.
-    e.g., Initialize database connections, load ML models.
+    Launches a periodic background task to clean up expired task store entries.
     """
     logger.info("Application starting up...")
-    logger.info("Application startup complete.")
+
+    async def _cleanup_loop():
+        """Removes completed/failed tasks older than 1 hour, every hour."""
+        while True:
+            await asyncio.sleep(3600)  # wait 1 hour between runs
+            removed = task_store.cleanup(max_age_seconds=3600)
+            if removed:
+                logger.info(f"Periodic cleanup removed {removed} expired task(s) from task store.")
+
+    app.state.cleanup_task = asyncio.create_task(_cleanup_loop(), name="task-store-cleanup")
+    logger.info("Application startup complete. Periodic task store cleanup scheduled.")
+
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """
     Actions to perform when the application shuts down.
-    e.g., Close database connections, clean up resources.
+    Cancels the periodic cleanup background task cleanly.
     """
     logger.info("Application shutting down...")
+    cleanup_task = getattr(app.state, "cleanup_task", None)
+    if cleanup_task and not cleanup_task.done():
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass  # expected on cancellation
     logger.info("Application shutdown complete.")

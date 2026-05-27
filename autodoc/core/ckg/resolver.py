@@ -58,6 +58,45 @@ def _resolve_relative_import(
     return ".".join(target_parts)
 
 
+def _resolve_js_ts_module(ckg: CKG, current_file_path: str, import_string: str) -> Optional[UUID]:
+    """Resolves JS/TS module imports, handling relative paths, index files, and aliases."""
+    import posixpath
+    
+    if import_string.startswith('.'):
+        current_dir = posixpath.dirname(current_file_path)
+        target_path = posixpath.normpath(posixpath.join(current_dir, import_string))
+        
+        possible_suffixes = ['.ts', '.tsx', '.js', '.jsx', '/index.ts', '/index.tsx', '/index.js', '/index.jsx']
+        for ext in possible_suffixes:
+            candidate_path = target_path + ext
+            for node in ckg.find_nodes(node_type="FILE"):
+                if node.file_path == candidate_path:
+                    return node.id
+                    
+        # Fallback to prefix matching
+        for node in ckg.find_nodes(node_type="FILE"):
+            if node.file_path == target_path or node.file_path.startswith(target_path + '.'):
+                return node.id
+    else:
+        # Path Aliases (e.g. @/components/Button)
+        alias_clean = import_string
+        if alias_clean.startswith('@/'):
+            alias_clean = alias_clean[2:]
+        elif alias_clean.startswith('~'):
+            alias_clean = alias_clean[1:]
+            
+        # Ignore external modules like 'react' or 'lodash'
+        if not '/' in alias_clean and alias_clean not in ['components', 'utils', 'lib']:
+            return None
+            
+        possible_suffixes = ['.ts', '.tsx', '.js', '.jsx', '/index.ts', '/index.tsx', '/index.js', '/index.jsx']
+        for node in ckg.find_nodes(node_type="FILE"):
+            for ext in possible_suffixes:
+                if node.file_path.endswith(alias_clean + ext):
+                    return node.id
+                    
+    return None
+
 def _resolve_imports(ckg: CKG):
     """Resolves IMPORTS edges between FileNodes based on ImportBlockNodes."""
     logger.info("Starting import resolution...")
@@ -76,6 +115,19 @@ def _resolve_imports(ckg: CKG):
         if not imports_data:
             logger.debug(f"No imports found for file: {file_node.file_path}")
             continue 
+            
+        if getattr(file_node, 'language', 'python') in ('javascript', 'typescript'):
+            for imp in imports_data:
+                source_module = imp.get("module")
+                if not source_module: continue
+                target_file_id = _resolve_js_ts_module(ckg, file_node.file_path, source_module)
+                if target_file_id:
+                    try:
+                        ckg.add_edge(file_node.id, target_file_id, type="IMPORTS", label=imp.get("name"))
+                        resolved_count += 1
+                    except KeyError as e:
+                        logger.error(f"Error adding IMPORTS edge: {e}")
+            continue # Skip Python logic
 
         import_aliases: Dict[str, str] = {} 
         file_node_nx = ckg.get_node_nx_data(file_node.id) 
@@ -333,6 +385,53 @@ def _resolve_used_imports(ckg: CKG):
 
     logger.info(f"Used import resolution finished. Added {resolved_count} USES_IMPORT edges.")
 
+def _resolve_jsx_dependencies(ckg: CKG):
+    """Resolves RENDERS edges between React components based on JSX tags."""
+    logger.info("Starting JSX dependency resolution...")
+    resolved_count = 0
+    
+    component_name_map: Dict[str, List[UUID]] = {}
+    for comp_node in ckg.find_nodes(node_type="REACT_COMPONENT"):
+        if comp_node.name not in component_name_map:
+            component_name_map[comp_node.name] = []
+        component_name_map[comp_node.name].append(comp_node.id)
+        
+    for comp_node in list(ckg.find_nodes(node_type="REACT_COMPONENT")):
+        renders_tags = getattr(comp_node, 'renders_components', [])
+        if not renders_tags:
+            continue
+            
+        file_node_id = comp_node.belongs_to
+        if not file_node_id: continue
+        
+        imported_file_ids = set()
+        for target_node in ckg.get_successors(file_node_id, edge_type="IMPORTS"):
+            imported_file_ids.add(target_node.id)
+            
+        for tag in renders_tags:
+            target_ids = component_name_map.get(tag, [])
+            if not target_ids:
+                continue
+                
+            best_target_id = None
+            for tid in target_ids:
+                t_node = ckg.get_node(tid)
+                if t_node and (t_node.belongs_to in imported_file_ids or t_node.belongs_to == file_node_id):
+                    best_target_id = tid
+                    break
+            
+            if not best_target_id:
+                best_target_id = target_ids[0]
+                
+            if best_target_id and best_target_id != comp_node.id:
+                try:
+                    ckg.add_edge(comp_node.id, best_target_id, type="RENDERS")
+                    resolved_count += 1
+                except KeyError as e:
+                    logger.error(f"Error adding RENDERS edge: {e}")
+                    
+    logger.info(f"JSX dependency resolution finished. Added {resolved_count} RENDERS edges.")
+
 def _cleanup_temporary_data(ckg: CKG):
     """Removes temporary data attached to nodes after resolution."""
     logger.info("Cleaning up temporary AST/resolver data from CKG nodes...")
@@ -371,6 +470,7 @@ def resolve_ckg_edges(ckg: CKG):
     _resolve_inheritance(ckg)
     _resolve_calls(ckg)
     _resolve_used_imports(ckg)
+    _resolve_jsx_dependencies(ckg)
     _cleanup_temporary_data(ckg)
 
     logger.info("CKG resolution phase completed.")

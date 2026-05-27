@@ -5,11 +5,15 @@ from typing import List, Dict, Optional, Tuple, Coroutine, Any
 from uuid import UUID
 
 from ..ckg.graph import CKG
+from ..ckg.traversal import EMPTY_FILE_SENTINEL
 from ...models.graph import (
-    BaseNode, FunctionNode, ClassNode, ImportBlockNode, FileNode, FolderNode, NonFunctionNonClassNode
+    BaseNode, FunctionNode, ClassNode, ImportBlockNode, FileNode, FolderNode, NonFunctionNonClassNode,
+    MarkdownFileNode, TextFileNode, YamlFileNode, TomlFileNode, DockerfileNode,
+    NonPythonFileNode, ReactComponentNode, ReactHookNode,
+    JsonFileNode, HtmlFileNode, CssFileNode
 )
 from ...models.settings import Settings 
-from ...services.llm_service import GroqLLMService 
+from ...services.llm_service import BaseLLMService, get_llm_service
 from . import prompts 
 
 logger = logging.getLogger(__name__)
@@ -111,6 +115,48 @@ def _get_non_func_class_context(ckg: CKG, node: NonFunctionNonClassNode) -> Dict
 
     return context
 
+def _get_react_component_context(ckg: CKG, node: ReactComponentNode) -> Dict[str, Any]:
+    """Gathers context specifically for a ReactComponentNode."""
+    context = {
+        "name": node.name,
+        "docstring": node.docstring,
+        "code_snippet": node.code_snippet,
+        "file_path": node.file_path,
+        "props": node.props,
+        "hooks_used": node.hooks_used,
+        "renders_components": node.renders_components,
+        "callers": []
+    }
+    for pred_node in ckg.get_predecessors(node.id, edge_type="RENDERS"):
+         caller_desc = f"`{pred_node.name}` ({pred_node.node_type} in `{pred_node.file_path}`)"
+         context["callers"].append(caller_desc)
+    for pred_node in ckg.get_predecessors(node.id, edge_type="CALLS"):
+         caller_desc = f"`{pred_node.name}` ({pred_node.node_type} in `{pred_node.file_path}`)"
+         context["callers"].append(caller_desc)
+
+    return context
+
+def _get_react_hook_context(ckg: CKG, node: ReactHookNode) -> Dict[str, Any]:
+    """Gathers context specifically for a ReactHookNode."""
+    context = {
+        "name": node.name,
+        "signature": node.signature,
+        "docstring": node.docstring,
+        "code_snippet": node.code_snippet,
+        "file_path": node.file_path,
+        "callers": [],
+        "callees": []
+    }
+    for pred_node in ckg.get_predecessors(node.id, edge_type="CALLS"):
+         caller_desc = f"`{pred_node.name}` ({pred_node.node_type} in `{pred_node.file_path}`)"
+         context["callers"].append(caller_desc)
+
+    for succ_node in ckg.get_successors(node.id, edge_type="CALLS"):
+         callee_desc = f"`{succ_node.name}` ({succ_node.node_type})"
+         context["callees"].append(callee_desc)
+         
+    return context
+
 def _get_file_context(ckg: CKG, node: FileNode) -> Dict[str, Any]:
     """Gathers context specifically for a FileNode."""
     context = {
@@ -132,8 +178,12 @@ def _get_file_context(ckg: CKG, node: FileNode) -> Dict[str, Any]:
 
         if isinstance(child_node, ClassNode):
             context["contained_classes"].append(f"`{child_node.name}`")
+        elif isinstance(child_node, ReactComponentNode):
+            context["contained_classes"].append(f"`{child_node.name}` (React Component)")
         elif isinstance(child_node, FunctionNode):
             context["contained_functions"].append(f"`{child_node.name}`")
+        elif isinstance(child_node, ReactHookNode):
+            context["contained_functions"].append(f"`{child_node.name}` (React Hook)")
         elif isinstance(child_node, NonFunctionNonClassNode):
              context["contained_blocks_count"] += 1
 
@@ -171,7 +221,7 @@ def _get_folder_context(ckg: CKG, node: FolderNode) -> Dict[str, Any]:
 async def _summarize_node_task(
     ckg: CKG,
     node_id: UUID,
-    llm_service: GroqLLMService,
+    llm_service: BaseLLMService,
     semaphore: asyncio.Semaphore
 ) -> Tuple[UUID, Optional[str]]:
     """
@@ -186,6 +236,26 @@ async def _summarize_node_task(
     if node.summary is not None and node.summary != "(Summary generation failed)":
         logger.debug(f"Node {node.id} ('{node.name}') already summarized. Skipping task.")
         return node_id, node.summary
+
+    # Short-circuit 1: Empty non-Python files
+    if isinstance(node, NonPythonFileNode) and getattr(node, "raw_content", None) == EMPTY_FILE_SENTINEL:
+        logger.debug(f"Short-circuiting LLM call for empty file: {node.name}")
+        return node_id, "This file is empty. There is no content to document."
+
+    # Short-circuit 2: Empty Python files (no contained AST nodes or imports)
+    if isinstance(node, FileNode):
+        has_contents = any(ckg.get_successors(node.id, edge_type="CONTAINS"))
+        has_imports = any(ckg.get_successors(node.id, edge_type="IMPORTS"))
+        if not has_contents and not has_imports:
+            logger.debug(f"Short-circuiting LLM call for empty Python file: {node.name}")
+            return node_id, "This Python file is empty or contains only comments. There is no code to document."
+
+    # Short-circuit 3: Empty Folders
+    if isinstance(node, FolderNode):
+        has_contents = any(ckg.get_successors(node.id, edge_type="CONTAINS"))
+        if not has_contents:
+            logger.debug(f"Short-circuiting LLM call for empty folder: {node.name}")
+            return node_id, "This folder is empty."
 
     async with semaphore: 
         logger.debug(f"Acquired semaphore for summarizing node {node.id} ('{node.name}')")
@@ -206,12 +276,51 @@ async def _summarize_node_task(
             elif isinstance(node, NonFunctionNonClassNode):
                  context = _get_non_func_class_context(ckg, node)
                  prompt = prompts.generate_non_function_non_class_prompt(**context)
+            elif isinstance(node, ReactComponentNode):
+                context = _get_react_component_context(ckg, node)
+                prompt = prompts.generate_react_component_prompt(**context)
+            elif isinstance(node, ReactHookNode):
+                context = _get_react_hook_context(ckg, node)
+                prompt = prompts.generate_react_hook_prompt(**context)
             elif isinstance(node, FileNode):
                 context = _get_file_context(ckg, node)
                 prompt = prompts.generate_file_prompt(**context)
             elif isinstance(node, FolderNode):
                 context = _get_folder_context(ckg, node)
                 prompt = prompts.generate_folder_prompt(**context)
+            # --- Non-Python file nodes ---
+            elif isinstance(node, MarkdownFileNode):
+                prompt = prompts.generate_markdown_file_prompt(
+                    file_path=node.file_path, raw_content=node.raw_content
+                )
+            elif isinstance(node, TextFileNode):
+                prompt = prompts.generate_text_file_prompt(
+                    file_path=node.file_path, raw_content=node.raw_content
+                )
+            elif isinstance(node, YamlFileNode):
+                prompt = prompts.generate_yaml_file_prompt(
+                    file_path=node.file_path, raw_content=node.raw_content
+                )
+            elif isinstance(node, TomlFileNode):
+                prompt = prompts.generate_toml_file_prompt(
+                    file_path=node.file_path, raw_content=node.raw_content
+                )
+            elif isinstance(node, DockerfileNode):
+                prompt = prompts.generate_dockerfile_prompt(
+                    file_path=node.file_path, raw_content=node.raw_content
+                )
+            elif isinstance(node, JsonFileNode):
+                prompt = prompts.generate_json_file_prompt(
+                    file_path=node.file_path, raw_content=node.raw_content
+                )
+            elif isinstance(node, HtmlFileNode):
+                prompt = prompts.generate_html_file_prompt(
+                    file_path=node.file_path, raw_content=node.raw_content
+                )
+            elif isinstance(node, CssFileNode):
+                prompt = prompts.generate_css_file_prompt(
+                    file_path=node.file_path, raw_content=node.raw_content
+                )
             else:
                 logger.warning(f"Summarization not implemented for node type: {node.node_type} (Node ID: {node_id})")
                 error_message = "(Error: Unknown node type for summarization)"
@@ -258,7 +367,7 @@ async def generate_summaries(ckg: CKG, settings: Settings):
     start_time_total = time.time()
 
     try:
-        llm_service = GroqLLMService()
+        llm_service = get_llm_service()
     except Exception as e:
         logger.critical(f"Failed to initialize LLM Service: {e}. Aborting summarization.")
         for node in ckg.get_all_nodes():
@@ -329,7 +438,7 @@ async def generate_summaries(ckg: CKG, settings: Settings):
     logger.info(f"CKG summarization complete in {elapsed_total:.2f} seconds. Total nodes processed: {total_nodes_processed}, Total failures: {total_nodes_failed}.")
 
 
-async def generate_final_overview(ckg: CKG, llm_service: GroqLLMService, semaphore: asyncio.Semaphore) -> Optional[str]:
+async def generate_final_overview(ckg: CKG, llm_service: BaseLLMService, semaphore: asyncio.Semaphore) -> Optional[str]:
     """Generates the final project overview summary."""
     logger.info("Generating final project overview...")
     root_nodes = list(ckg.find_nodes(depth=0))

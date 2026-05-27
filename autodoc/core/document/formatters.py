@@ -7,7 +7,10 @@ from ...models.graph import (
     ClassNode,
     FunctionNode,
     ImportBlockNode,
-    NonFunctionNonClassNode
+    NonFunctionNonClassNode,
+    NonPythonFileNode,
+    ReactComponentNode,
+    ReactHookNode,
 )
 
 logger = logging.getLogger(__name__)
@@ -24,7 +27,15 @@ def _create_code_block(code: Optional[str], lang: str = 'python') -> str:
     if not code:
         return ""
     code = code.replace('```', '\\`\\`\\`')
-    return f"```python\n{code.strip()}\n```\n\n"
+    return f"```{lang}\n{code.strip()}\n```\n\n"
+
+def _get_lang_from_path(file_path: str) -> str:
+    """Determine markdown language identifier from file extension."""
+    if file_path:
+        ext = file_path.lower().split('.')[-1]
+        if ext in ('js', 'jsx'): return 'javascript'
+        if ext in ('ts', 'tsx'): return 'typescript'
+    return 'python'
 
 def _format_docstring(docstring: Optional[str]) -> str:
     """Formats a docstring, potentially as a blockquote."""
@@ -73,7 +84,7 @@ def format_class_markdown(node: ClassNode, heading_level: int = 4) -> str:
     # md += _format_metadata_line("Inherits From", inheritance_info)
 
     if node.signature:
-        md += f"**Signature:**\n{_create_code_block(node.signature)}"
+        md += f"**Signature:**\n{_create_code_block(node.signature, _get_lang_from_path(node.file_path))}"
     # Decide whether to include docstring if summary exists
     # if node.docstring:
     #     md += _format_docstring(node.docstring)
@@ -81,7 +92,7 @@ def format_class_markdown(node: ClassNode, heading_level: int = 4) -> str:
     if node.code_snippet:
         md += "<details>\n"
         md += f"<summary>Code Snippet (Lines {node.start_line}-{node.end_line})</summary>\n\n"
-        md += _create_code_block(node.code_snippet)
+        md += _create_code_block(node.code_snippet, _get_lang_from_path(node.file_path))
         md += "</details>\n\n"
     return md
 
@@ -94,14 +105,14 @@ def format_function_markdown(node: FunctionNode, heading_level: int = 5) -> str:
         md += _format_metadata_line("Access", node.access_modifier)
 
     if node.signature:
-        md += f"**Signature:**\n{_create_code_block(node.signature)}"
+        md += f"**Signature:**\n{_create_code_block(node.signature, _get_lang_from_path(node.file_path))}"
     # Decide whether to include docstring if summary exists
     # if node.docstring:
     #     md += _format_docstring(node.docstring)
     md += _format_summary(node.summary)
     if node.code_snippet:
         md += f"**Code Snippet (Lines {node.start_line}-{node.end_line}):**\n"
-        md += _create_code_block(node.code_snippet)
+        md += _create_code_block(node.code_snippet, _get_lang_from_path(node.file_path))
     return md
 
 def format_non_function_non_class_markdown(node: NonFunctionNonClassNode, heading_level: int = 5) -> str:
@@ -115,7 +126,7 @@ def format_non_function_non_class_markdown(node: NonFunctionNonClassNode, headin
     md += _format_summary(node.summary)
     if node.code_snippet:
         md += "**Code Snippet:**\n"
-        md += _create_code_block(node.code_snippet)
+        md += _create_code_block(node.code_snippet, _get_lang_from_path(node.file_path))
     return md
 
 def format_import_block_markdown(node: ImportBlockNode, heading_level: int = 4) -> str:
@@ -131,10 +142,88 @@ def format_import_block_markdown(node: ImportBlockNode, heading_level: int = 4) 
         if code: import_lines.append(code.strip())
 
     if import_lines:
+        # Deduplicate while preserving order
+        import_lines = list(dict.fromkeys(import_lines))
         import_block_str = "\n".join(import_lines)
         md += "<details>\n"
         md += f"<summary>Import Statements</summary>\n\n"
-        md += _create_code_block(import_block_str)
+        md += _create_code_block(import_block_str, _get_lang_from_path(node.file_path))
+        md += "</details>\n\n"
+
+    return md
+
+
+def format_react_component_markdown(node: ReactComponentNode, heading_level: int = 4) -> str:
+    """Formats a ReactComponentNode into Markdown."""
+    logger.debug(f"Formatting ReactComponentNode: {node.name}")
+    md = _create_heading(f"React Component: {node.name}", heading_level)
+    
+    if node.props:
+        md += f"- **Props:** `{', '.join(node.props)}`\n"
+    if node.hooks_used:
+        md += f"- **Hooks Used:** `{', '.join(node.hooks_used)}`\n"
+        
+    md += _format_summary(node.summary)
+    
+    if node.code_snippet:
+        md += "<details>\n"
+        md += f"<summary>Code Snippet (Lines {node.start_line}-{node.end_line})</summary>\n\n"
+        md += _create_code_block(node.code_snippet, _get_lang_from_path(node.file_path))
+        md += "</details>\n\n"
+    return md
+
+def format_react_hook_markdown(node: ReactHookNode, heading_level: int = 5) -> str:
+    """Formats a ReactHookNode into Markdown."""
+    logger.debug(f"Formatting ReactHookNode: {node.name}")
+    md = _create_heading(f"React Hook: {node.name}", heading_level)
+    
+    if node.signature:
+        md += f"**Signature:**\n{_create_code_block(node.signature, _get_lang_from_path(node.file_path))}"
+        
+    md += _format_summary(node.summary)
+    
+    if node.code_snippet:
+        md += f"**Code Snippet (Lines {node.start_line}-{node.end_line}):**\n"
+        md += _create_code_block(node.code_snippet, _get_lang_from_path(node.file_path))
+    return md
+
+_NON_PYTHON_TYPE_LABELS: dict = {
+    "MARKDOWN_FILE": "Markdown",
+    "TEXT_FILE":     "Text File",
+    "YAML_FILE":     "YAML Config",
+    "TOML_FILE":     "TOML Config",
+    "DOCKERFILE":    "Dockerfile",
+    "JSON_FILE":     "JSON",
+    "HTML_FILE":     "HTML",
+    "CSS_FILE":      "CSS",
+}
+
+_NON_PYTHON_LANG_MAP: dict = {
+    "MARKDOWN_FILE": "markdown",
+    "TEXT_FILE":     "",
+    "YAML_FILE":     "yaml",
+    "TOML_FILE":     "toml",
+    "DOCKERFILE":    "dockerfile",
+    "JSON_FILE":     "json",
+    "HTML_FILE":     "html",
+    "CSS_FILE":      "css",
+}
+
+
+def format_non_python_file_markdown(node: NonPythonFileNode, heading_level: int = 3) -> str:
+    """Formats any NonPythonFileNode (Markdown, Text, YAML, TOML, Dockerfile) into Markdown."""
+    logger.debug(f"Formatting {node.node_type} node: {node.name}")
+    label = _NON_PYTHON_TYPE_LABELS.get(node.node_type, "Config File")
+    lang  = _NON_PYTHON_LANG_MAP.get(node.node_type, "")
+
+    md  = _create_heading(f"{label}: {node.name}", heading_level)
+    md += _format_metadata_line("Path", node.file_path)
+    md += _format_summary(node.summary)
+
+    if node.raw_content:
+        md += "<details>\n"
+        md += "<summary>File Contents</summary>\n\n"
+        md += f"```{lang}\n{node.raw_content.strip()}\n```\n\n"
         md += "</details>\n\n"
 
     return md
@@ -152,12 +241,23 @@ def format_node_markdown(node: BaseNode, heading_level: int) -> str:
         the node type is unrecognized or formatting fails.
     """
     formatter_map = {
-        "FOLDER": format_folder_markdown,
-        "FILE": format_file_markdown,
-        "IMPORT_BLOCK": format_import_block_markdown,
-        "CLASS": format_class_markdown,
-        "FUNCTION": format_function_markdown,
-        "NON_FUNCTION_NON_CLASS": format_non_function_non_class_markdown,
+        "FOLDER":                   format_folder_markdown,
+        "FILE":                     format_file_markdown,
+        "IMPORT_BLOCK":             format_import_block_markdown,
+        "CLASS":                    format_class_markdown,
+        "FUNCTION":                 format_function_markdown,
+        "NON_FUNCTION_NON_CLASS":   format_non_function_non_class_markdown,
+        "REACT_COMPONENT":          format_react_component_markdown,
+        "REACT_HOOK":               format_react_hook_markdown,
+        # Non-Python file types — all share the same formatter
+        "MARKDOWN_FILE":            format_non_python_file_markdown,
+        "TEXT_FILE":                format_non_python_file_markdown,
+        "YAML_FILE":                format_non_python_file_markdown,
+        "TOML_FILE":                format_non_python_file_markdown,
+        "DOCKERFILE":               format_non_python_file_markdown,
+        "JSON_FILE":                format_non_python_file_markdown,
+        "HTML_FILE":                format_non_python_file_markdown,
+        "CSS_FILE":                 format_non_python_file_markdown,
     }
 
     formatter = formatter_map.get(node.node_type)

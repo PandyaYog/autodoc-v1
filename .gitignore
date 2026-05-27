@@ -3,3 +3,4 @@ __pycache__
 .github
 ckg_data.json
 ckg_visualization.png
+/venv

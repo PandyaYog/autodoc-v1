@@ -100,13 +100,24 @@ def _get_call_name(node: ast.Call) -> Optional[str]:
     return None
 
 def _get_access_modifier(name: str) -> str:
-    """Infers access modifier based on Python naming conventions."""
-    if name.startswith("__") and not name.endswith("__"): # Exclude dunder methods
-        return "private"
-    elif name.startswith("_"):
-        return "protected"
-    else:
-        return "public"
+    """
+    Infers the access modifier based on Python naming conventions.
+
+    Rules (in priority order):
+      - Dunder methods/attributes (__init__, __str__, ...):  public
+        They are Python's special protocol methods, not restricted members.
+      - Name-mangled attributes (__x, no trailing __):       private
+      - Single-underscore prefix (_x):                       protected (by convention)
+      - Everything else:                                      public
+    """
+    is_dunder = name.startswith("__") and name.endswith("__")
+    if is_dunder:
+        return "public"          # e.g. __init__, __str__, __call__
+    if name.startswith("__"):
+        return "private"         # e.g. __mangled (name-mangling)
+    if name.startswith("_"):
+        return "protected"       # e.g. _helper (convention-only)
+    return "public"
 
 
 class ASTVisitor(ast.NodeVisitor):
@@ -198,6 +209,11 @@ class ASTVisitor(ast.NodeVisitor):
                 self.generic_visit(node)
 
     def visit_Import(self, node: ast.Import):
+        # Only collect top-level imports — skip imports nested inside functions,
+        # classes, or control-flow blocks (e.g. `if __name__ == '__main__':`).
+        if self._current_context_stack:
+            return
+
         start_line, end_line = _get_node_lines(node)
         for alias in node.names:
             self.imports.append({
@@ -211,6 +227,11 @@ class ASTVisitor(ast.NodeVisitor):
             })
 
     def visit_ImportFrom(self, node: ast.ImportFrom):
+        # Only collect top-level imports — skip imports nested inside functions,
+        # classes, or control-flow blocks (e.g. `if __name__ == '__main__':`).
+        if self._current_context_stack:
+            return
+
         start_line, end_line = _get_node_lines(node)
         module_name = node.module or ""
         level = node.level
